@@ -1,30 +1,33 @@
-# Acesse https://aka.ms/customizecontainer para saber como personalizar seu contêiner de depuração e como o Visual Studio usa este Dockerfile para criar suas imagens para uma depuração mais rápida.
-
-# Esta fase é usada durante a execução no VS no modo rápido (Padrão para a configuração de Depuração)
-FROM mcr.microsoft.com/dotnet/aspnet:8.0 AS base
-USER $APP_UID
-WORKDIR /app
-EXPOSE 8080
-EXPOSE 8081
-
-
-# Esta fase é usada para compilar o projeto de serviço
+# ================================
+# Build Stage
+# ================================
 FROM mcr.microsoft.com/dotnet/sdk:8.0 AS build
 ARG BUILD_CONFIGURATION=Release
 WORKDIR /src
+
+# Copy and restore dependencies
 COPY ["AvanteBot.API/AvanteBot.API.csproj", "AvanteBot.API/"]
-RUN dotnet restore "./AvanteBot.API/AvanteBot.API.csproj"
+RUN dotnet restore "AvanteBot.API/AvanteBot.API.csproj"
+
+# Copy the rest of the files and build
 COPY . .
 WORKDIR "/src/AvanteBot.API"
-RUN dotnet build "./AvanteBot.API.csproj" -c $BUILD_CONFIGURATION -o /app/build
+RUN dotnet publish "AvanteBot.API.csproj" -c $BUILD_CONFIGURATION -o /app/publish /p:UseAppHost=false
 
-# Esta fase é usada para publicar o projeto de serviço a ser copiado para a fase final
-FROM build AS publish
-ARG BUILD_CONFIGURATION=Release
-RUN dotnet publish "./AvanteBot.API.csproj" -c $BUILD_CONFIGURATION -o /app/publish /p:UseAppHost=false
-
-# Esta fase é usada na produção ou quando executada no VS no modo normal (padrão quando não está usando a configuração de Depuração)
-FROM base AS final
+# ================================
+# Runtime Stage
+# ================================
+FROM mcr.microsoft.com/dotnet/aspnet:8.0 AS final
 WORKDIR /app
-COPY --from=publish /app/publish .
+
+# Copy published output
+COPY --from=build /app/publish .
+
+# ✅ Important for Render (uses dynamic port)
+ENV ASPNETCORE_URLS=http://+:${PORT}
+
+# Optional: explicitly expose a default (Render ignores it, but good practice)
+EXPOSE 10000
+
+# Start the app
 ENTRYPOINT ["dotnet", "AvanteBot.API.dll"]
