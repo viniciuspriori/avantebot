@@ -1,4 +1,4 @@
-using System.Net.Http.Json;
+﻿using System.Net.Http.Json;
 using System.Text.Json;
 using Telegram.Bot;
 using Telegram.Bot.Types;
@@ -36,7 +36,7 @@ app.Run();
 
 // New helper method to handle the logic of fetching and sending an image.
 // This is used by both the initial '/image' command and the inline button callback.
-async Task SendNextImage(TelegramBotClient bot, long chatId, string query, CancellationToken cancellationToken = default)
+async Task SendNextImage(TelegramBotClient bot, long chatId, string query, string? username = null, CancellationToken cancellationToken = default)
 {
     if (string.IsNullOrWhiteSpace(query))
     {
@@ -74,7 +74,6 @@ async Task SendNextImage(TelegramBotClient bot, long chatId, string query, Cance
     var remaining = items.Except(imageCache[query]).ToList();
     if (!remaining.Any())
     {
-        // All images sent, clear cache and reset list
         imageCache[query].Clear();
         remaining = items;
         await bot.SendMessage(chatId, $"Resetting image pool for '{query}'. Sending the first image again.", cancellationToken: cancellationToken);
@@ -85,47 +84,56 @@ async Task SendNextImage(TelegramBotClient bot, long chatId, string query, Cance
 
     imageCache[query].Add(chosen);
 
+    // --- Caption Creation with Username ---
+    var caption = $"Result for: {query}";
+    if (username != null)
+    {
+        // Add the @username to the caption.
+        // Telegram supports markdown for mentions, but for a simple username, text is fine.
+        caption += $" requested by @{username}";
+    }
+
     // --- Create Inline Keyboard ---
-    // The CallbackData includes the command prefix and the original search query.
     var callbackData = $"{ImageCallbackPrefix}{query}";
     var inlineKeyboard = new InlineKeyboardMarkup(
-        InlineKeyboardButton.WithCallbackData("Give me more!", callbackData)
+        InlineKeyboardButton.WithCallbackData("🖼️ More Images", callbackData)
     );
 
-    // --- Send Photo with Button ---
+    // --- Send Photo with Username in Caption ---
     await bot.SendPhoto(
         chatId: chatId,
         photo: InputFile.FromUri(chosen),
-        caption: $"Result for: {query}",
-        replyMarkup: inlineKeyboard, // <-- Attach the inline keyboard here
+        caption: caption, // <-- Updated caption
+        replyMarkup: inlineKeyboard,
         cancellationToken: cancellationToken
     );
 }
 
-// Original OnGetImage is now simplified to just parse the command and call the helper.
+// -----------------------------------------------------------------------------------------------------
+
 async void OnGetImage(TelegramBotClient bot, Update update, Message msg)
 {
     var query = msg!.Text!.Replace("/image", "").Trim();
-    await SendNextImage(bot, msg.Chat.Id, query);
+
+    await SendNextImage(bot, msg.Chat.Id, query, msg.From?.Username);
 }
+
+// -----------------------------------------------------------------------------------------------------
 
 async void OnUpdate(TelegramBotClient bot, Update update)
 {
     // --- 1. Handle Callback Queries (Button Clicks) ---
     if (update.Type == UpdateType.CallbackQuery && update.CallbackQuery is { } callbackQuery)
     {
-        // Immediately answer the callback query to dismiss the "loading" animation
         await bot.AnswerCallbackQuery(callbackQuery.Id);
 
         var data = callbackQuery.Data;
         if (data != null && data.StartsWith(ImageCallbackPrefix))
         {
-            // Extract the original search query from the callback data
             var query = data.Replace(ImageCallbackPrefix, "");
             var chatId = callbackQuery.Message?.Chat.Id ?? callbackQuery.From.Id;
 
-            // Use the extracted query to send the next image
-            await SendNextImage(bot, chatId, query);
+            await SendNextImage(bot, chatId, query, callbackQuery.From.Username);
         }
     }
 
@@ -134,12 +142,10 @@ async void OnUpdate(TelegramBotClient bot, Update update)
     {
         if (msg.Text.StartsWith("/image"))
         {
-            // Initial image search command
             OnGetImage(bot, update, msg);
         }
         else
         {
-            // Default response for other messages
             await bot.SendMessage(msg.Chat.Id, $"{msg.From?.FirstName} said: {msg.Text}\nTry /image <term> to search for an image!");
         }
     }
