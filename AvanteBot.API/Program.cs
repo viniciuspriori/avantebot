@@ -89,7 +89,7 @@ async Task SendNextImage(TelegramBotClient bot, long chatId, string query, Cance
     // The CallbackData includes the command prefix and the original search query.
     var callbackData = $"{ImageCallbackPrefix}{query}";
     var inlineKeyboard = new InlineKeyboardMarkup(
-        InlineKeyboardButton.WithCallbackData("Manda Maiss", callbackData)
+        InlineKeyboardButton.WithCallbackData("Give me more!", callbackData)
     );
 
     // --- Send Photo with Button ---
