@@ -5,8 +5,11 @@ using Telegram.Bot.Types;
 using Telegram.Bot.Types.Enums;
 
 var builder = WebApplication.CreateBuilder(args);
-var token = builder.Configuration["BotToken"]!;             // set your bot token in appsettings.json
-var webhookUrl = builder.Configuration["BotWebhookUrl"]!;   // set your bot webhook public url in appsettings.json
+//var token = builder.Configuration["BotToken"]!;
+var token = Environment.GetEnvironmentVariable("BotToken")!; // set your bot token in appsettings.json
+
+var webhookUrl = Environment.GetEnvironmentVariable("BotWebhookUrl")!; // set your bot token in appsettings.json
+//var webhookUrl = builder.Configuration["BotWebhookUrl"]!;   // set your bot webhook public url in appsettings.json
 
 builder.Services.AddHttpClient("tgwebhook")
                 .RemoveAllLoggers()
