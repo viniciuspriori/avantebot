@@ -114,8 +114,30 @@ async Task SendNextImage(
         await bot.SendMessage(chatId, $"Resetting image pool for '{query}'.", cancellationToken: cancellationToken);
     }
 
+    string chosen = null;
     var random = new Random();
-    var chosen = remaining[random.Next(remaining.Count)]!;
+
+    // Try up to 5 times to find a valid image URL
+    for (int attempt = 0; attempt < 5 && remaining.Any(); attempt++)
+    {
+        var candidate = remaining[random.Next(remaining.Count)]!;
+        if (IsValidImageUrl(candidate))
+        {
+            chosen = candidate;
+            break;
+        }
+        else
+        {
+            remaining.Remove(candidate); // remove invalid one
+        }
+    }
+
+    if (chosen == null)
+    {
+        await bot.SendMessage(chatId, $"Could not find a valid image link for '{query}'.", cancellationToken: cancellationToken);
+        return;
+    }
+
     imageCache[query].Add(chosen);
 
     // --- Caption + Inline Button ---
@@ -179,3 +201,17 @@ async void OnUpdate(TelegramBotClient bot, Update update)
         }
     }
 }
+
+bool IsValidImageUrl(string url)
+{
+    if (string.IsNullOrEmpty(url))
+        return false;
+
+    url = url.ToLowerInvariant();
+
+    return (url.StartsWith("http") &&
+            (url.EndsWith(".jpg") || url.EndsWith(".jpeg") ||
+             url.EndsWith(".png") || url.EndsWith(".gif") ||
+             url.EndsWith(".webp")));
+}
+
