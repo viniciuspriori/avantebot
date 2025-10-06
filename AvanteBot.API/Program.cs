@@ -49,24 +49,30 @@ async Task SendNextImage(
         return;
     }
 
-    // --- Google API Search ---
     var apiKey = Environment.GetEnvironmentVariable("GoogleApiKey");
     var cx = Environment.GetEnvironmentVariable("GoogleCx");
     var serpApiKey = Environment.GetEnvironmentVariable("SerpApiKey");
 
-    List<string> items = new();
+    List<string> imageLinks = new();
 
     try
     {
-        var googleUrl = $"https://www.googleapis.com/customsearch/v1?q={Uri.EscapeDataString(query)}&searchType=image&key={apiKey}&cx={cx}";
-        var result = await http.GetFromJsonAsync<JsonElement>(googleUrl, cancellationToken);
-
-        if (result.TryGetProperty("items", out var itemsElement))
+        // --- Try Google Custom Search API ---
+        if (!string.IsNullOrWhiteSpace(apiKey) && !string.IsNullOrWhiteSpace(cx))
         {
-            items = itemsElement.EnumerateArray()
-                .Select(i => i.GetProperty("link").GetString())
-                .Where(s => !string.IsNullOrEmpty(s))
-                .ToList();
+            var searchUrl =
+                $"https://www.googleapis.com/customsearch/v1?q={Uri.EscapeDataString(query)}&searchType=image&key={apiKey}&cx={cx}";
+            var result = await http.GetFromJsonAsync<JsonElement>(searchUrl, cancellationToken);
+
+            if (result.TryGetProperty("items", out var itemsElement))
+            {
+                var googleImages = itemsElement.EnumerateArray()
+                    .Select(i => i.GetProperty("link").GetString())
+                    .Where(IsValidImageUrl)
+                    .ToList();
+
+                imageLinks.AddRange(googleImages);
+            }
         }
     }
     catch (Exception ex)
@@ -74,8 +80,8 @@ async Task SendNextImage(
         Console.WriteLine($"Google image search failed: {ex.Message}");
     }
 
-    // --- Fallback to SerpAPI if Google fails ---
-    if (items.Count == 0 && !string.IsNullOrEmpty(serpApiKey))
+    // --- Fallback: SerpAPI ---
+    if (imageLinks.Count == 0 && !string.IsNullOrWhiteSpace(serpApiKey))
     {
         try
         {
@@ -84,65 +90,44 @@ async Task SendNextImage(
 
             if (serpResult.TryGetProperty("images_results", out var serpItems))
             {
-                items = serpItems.EnumerateArray()
+                var serpImages = serpItems.EnumerateArray()
                     .Select(i => i.GetProperty("original").GetString())
-                    .Where(s => !string.IsNullOrEmpty(s))
+                    .Where(IsValidImageUrl)
                     .ToList();
+
+                imageLinks.AddRange(serpImages);
             }
         }
         catch (Exception ex)
         {
-            Console.WriteLine($"SerpAPI image search failed: {ex.Message}");
+            Console.WriteLine($"SerpAPI fallback failed: {ex.Message}");
         }
     }
 
-    if (!items.Any())
+    if (imageLinks.Count == 0)
     {
-        await bot.SendMessage(chatId, $"No images found for '{query}'.", cancellationToken: cancellationToken);
+        await bot.SendMessage(chatId, $"No valid images found for '{query}'.", cancellationToken: cancellationToken);
         return;
     }
 
-    // --- Image Caching Logic ---
+    // --- Image caching logic ---
     if (!imageCache.ContainsKey(query))
         imageCache[query] = new List<string>();
 
-    var remaining = items.Except(imageCache[query]).ToList();
-    if (!remaining.Any())
+    var remaining = imageLinks.Except(imageCache[query]).ToList();
+    if (remaining.Count == 0)
     {
         imageCache[query].Clear();
-        remaining = items;
-        await bot.SendMessage(chatId, $"Resetting image pool for '{query}'.", cancellationToken: cancellationToken);
+        remaining = imageLinks;
     }
 
-    string chosen = null;
     var random = new Random();
-
-    // Try up to 5 times to find a valid image URL
-    for (int attempt = 0; attempt < 5 && remaining.Any(); attempt++)
-    {
-        var candidate = remaining[random.Next(remaining.Count)]!;
-        if (IsValidImageUrl(candidate))
-        {
-            chosen = candidate;
-            break;
-        }
-        else
-        {
-            remaining.Remove(candidate); // remove invalid one
-        }
-    }
-
-    if (chosen == null)
-    {
-        await bot.SendMessage(chatId, $"Could not find a valid image link for '{query}'.", cancellationToken: cancellationToken);
-        return;
-    }
-
+    var chosen = remaining[random.Next(remaining.Count)]!;
     imageCache[query].Add(chosen);
 
-    // --- Caption + Inline Button ---
     var caption = $"Result for: \"{query}\"";
-    if (username != null) caption += $" requested by @{username}";
+    if (username != null)
+        caption += $" requested by @{username}";
 
     var callbackData = $"{ImageCallbackPrefix}{query}";
     var inlineKeyboard = new InlineKeyboardMarkup(
@@ -157,6 +142,20 @@ async Task SendNextImage(
         cancellationToken: cancellationToken
     );
 }
+
+// --- Helper method ---
+bool IsValidImageUrl(string? url)
+{
+    if (string.IsNullOrWhiteSpace(url))
+        return false;
+
+    url = url.ToLowerInvariant();
+
+    // Filter only real image extensions
+    string[] validExtensions = [".jpg", ".jpeg", ".png", ".gif", ".webp"];
+    return url.StartsWith("http") && validExtensions.Any(url.EndsWith);
+}
+
 
 
 // -----------------------------------------------------------------------------------------------------
@@ -194,7 +193,7 @@ async void OnUpdate(TelegramBotClient bot, Update update)
         {
             OnGetImage(bot, update, msg);
         }
-        if(msg.Text.StartsWith("/teste"))
+        if (msg.Text.StartsWith("/teste"))
         {
             var query = msg!.Text!.Replace("/teste", "").Trim();
             await bot.SendMessage(msg.Chat.Id, $"{msg.From?.FirstName} said: {query}\nTry /image <term> to search for an image!");
@@ -202,16 +201,4 @@ async void OnUpdate(TelegramBotClient bot, Update update)
     }
 }
 
-bool IsValidImageUrl(string url)
-{
-    if (string.IsNullOrEmpty(url))
-        return false;
-
-    url = url.ToLowerInvariant();
-
-    return (url.StartsWith("http") &&
-            (url.EndsWith(".jpg") || url.EndsWith(".jpeg") ||
-             url.EndsWith(".png") || url.EndsWith(".gif") ||
-             url.EndsWith(".webp")));
-}
 
