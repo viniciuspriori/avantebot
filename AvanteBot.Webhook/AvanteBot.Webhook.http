@@ -1,6 +1,0 @@
-@AvanteBot.Webhook_HostAddress = http://localhost:5288
-
-GET {{AvanteBot.Webhook_HostAddress}}/weatherforecast/
-Accept: application/json
-
-###
