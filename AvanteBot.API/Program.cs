@@ -36,7 +36,12 @@ app.Run();
 
 // New helper method to handle the logic of fetching and sending an image.
 // This is used by both the initial '/image' command and the inline button callback.
-async Task SendNextImage(TelegramBotClient bot, long chatId, string query, string? username = null, CancellationToken cancellationToken = default)
+async Task SendNextImage(
+    TelegramBotClient bot,
+    long chatId,
+    string query,
+    string? username = null,
+    CancellationToken cancellationToken = default)
 {
     if (string.IsNullOrWhiteSpace(query))
     {
@@ -44,22 +49,52 @@ async Task SendNextImage(TelegramBotClient bot, long chatId, string query, strin
         return;
     }
 
-    var apiKey = Environment.GetEnvironmentVariable("GoogleApiKey")!;
-    var cx = Environment.GetEnvironmentVariable("GoogleCx")!;
+    // --- Google API Search ---
+    var apiKey = Environment.GetEnvironmentVariable("GoogleApiKey");
+    var cx = Environment.GetEnvironmentVariable("GoogleCx");
+    var serpApiKey = Environment.GetEnvironmentVariable("SerpApiKey");
 
-    var searchUrl = $"https://www.googleapis.com/customsearch/v1?q={Uri.EscapeDataString(query)}&searchType=image&key={apiKey}&cx={cx}";
-    var result = await http.GetFromJsonAsync<JsonElement>(searchUrl, cancellationToken);
+    List<string> items = new();
 
-    if (!result.TryGetProperty("items", out var itemsElement))
+    try
     {
-        await bot.SendMessage(chatId, $"No images found for '{query}'.", cancellationToken: cancellationToken);
-        return;
+        var googleUrl = $"https://www.googleapis.com/customsearch/v1?q={Uri.EscapeDataString(query)}&searchType=image&key={apiKey}&cx={cx}";
+        var result = await http.GetFromJsonAsync<JsonElement>(googleUrl, cancellationToken);
+
+        if (result.TryGetProperty("items", out var itemsElement))
+        {
+            items = itemsElement.EnumerateArray()
+                .Select(i => i.GetProperty("link").GetString())
+                .Where(s => !string.IsNullOrEmpty(s))
+                .ToList();
+        }
+    }
+    catch (Exception ex)
+    {
+        Console.WriteLine($"Google image search failed: {ex.Message}");
     }
 
-    var items = itemsElement.EnumerateArray()
-        .Select(i => i.GetProperty("link").GetString())
-        .Where(s => !string.IsNullOrEmpty(s))
-        .ToList();
+    // --- Fallback to SerpAPI if Google fails ---
+    if (items.Count == 0 && !string.IsNullOrEmpty(serpApiKey))
+    {
+        try
+        {
+            var serpUrl = $"https://serpapi.com/search.json?engine=google_images&q={Uri.EscapeDataString(query)}&api_key={serpApiKey}";
+            var serpResult = await http.GetFromJsonAsync<JsonElement>(serpUrl, cancellationToken);
+
+            if (serpResult.TryGetProperty("images_results", out var serpItems))
+            {
+                items = serpItems.EnumerateArray()
+                    .Select(i => i.GetProperty("original").GetString())
+                    .Where(s => !string.IsNullOrEmpty(s))
+                    .ToList();
+            }
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"SerpAPI image search failed: {ex.Message}");
+        }
+    }
 
     if (!items.Any())
     {
@@ -67,7 +102,7 @@ async Task SendNextImage(TelegramBotClient bot, long chatId, string query, strin
         return;
     }
 
-    // --- Image Caching and Selection Logic ---
+    // --- Image Caching Logic ---
     if (!imageCache.ContainsKey(query))
         imageCache[query] = new List<string>();
 
@@ -76,38 +111,31 @@ async Task SendNextImage(TelegramBotClient bot, long chatId, string query, strin
     {
         imageCache[query].Clear();
         remaining = items;
-        await bot.SendMessage(chatId, $"Resetting image pool for '{query}'. Sending the first image again.", cancellationToken: cancellationToken);
+        await bot.SendMessage(chatId, $"Resetting image pool for '{query}'.", cancellationToken: cancellationToken);
     }
 
     var random = new Random();
     var chosen = remaining[random.Next(remaining.Count)]!;
-
     imageCache[query].Add(chosen);
 
-    // --- Caption Creation with Username ---
+    // --- Caption + Inline Button ---
     var caption = $"Result for: \"{query}\"";
-    if (username != null)
-    {
-        // Add the @username to the caption.
-        // Telegram supports markdown for mentions, but for a simple username, text is fine.
-        caption += $" requested by @{username}";
-    }
+    if (username != null) caption += $" requested by @{username}";
 
-    // --- Create Inline Keyboard ---
     var callbackData = $"{ImageCallbackPrefix}{query}";
     var inlineKeyboard = new InlineKeyboardMarkup(
         InlineKeyboardButton.WithCallbackData("🖼️ More Images", callbackData)
     );
 
-    // --- Send Photo with Username in Caption ---
     await bot.SendPhoto(
         chatId: chatId,
         photo: InputFile.FromUri(chosen),
-        caption: caption, // <-- Updated caption
+        caption: caption,
         replyMarkup: inlineKeyboard,
         cancellationToken: cancellationToken
     );
 }
+
 
 // -----------------------------------------------------------------------------------------------------
 
