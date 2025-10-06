@@ -85,7 +85,7 @@ async Task SendNextImage(TelegramBotClient bot, long chatId, string query, strin
     imageCache[query].Add(chosen);
 
     // --- Caption Creation with Username ---
-    var caption = $"Result for: {query}";
+    var caption = $"Result for: \"{query}\"";
     if (username != null)
     {
         // Add the @username to the caption.
@@ -144,9 +144,10 @@ async void OnUpdate(TelegramBotClient bot, Update update)
         {
             OnGetImage(bot, update, msg);
         }
-        else
+        if(msg.Text.StartsWith("/teste"))
         {
-            await bot.SendMessage(msg.Chat.Id, $"{msg.From?.FirstName} said: {msg.Text}\nTry /image <term> to search for an image!");
+            var query = msg!.Text!.Replace("/teste", "").Trim();
+            await bot.SendMessage(msg.Chat.Id, $"{msg.From?.FirstName} said: {query}\nTry /image <term> to search for an image!");
         }
     }
 }
