@@ -13,7 +13,7 @@ builder.Services.AddHttpClient("tgwebhook")
                 .AddTypedClient(httpClient => new TelegramBotClient(token, httpClient));
 
 var app = builder.Build();
-app.UseHttpsRedirection();
+//app.UseHttpsRedirection();
 
 var imageCache = new Dictionary<string, List<string>>();
 var http = new HttpClient();
@@ -23,6 +23,10 @@ app.MapGet("/bot/setWebhook", async (TelegramBotClient bot) =>
     await bot.SetWebhook(webhookUrl); 
     return $"Webhook set to {webhookUrl}";
 });
+
+
+app.MapGet("/", () => "AvanteBot is online!");
+app.Run();
 
 app.MapPost("/bot", OnUpdate);
 
