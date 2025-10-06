@@ -27,10 +27,7 @@ app.MapGet("/bot/setWebhook", async (TelegramBotClient bot) =>
     return $"Webhook set to {webhookUrl}";
 });
 
-
 app.MapGet("/", () => "AvanteBot is online!");
-app.Run();
-
 app.MapPost("/bot", OnUpdate);
 
 app.Run();
