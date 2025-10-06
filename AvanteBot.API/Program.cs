@@ -5,10 +5,11 @@ using Telegram.Bot.Types;
 using Telegram.Bot.Types.Enums;
 
 var builder = WebApplication.CreateBuilder(args);
-//var token = builder.Configuration["BotToken"]!;
-var token = Environment.GetEnvironmentVariable("BotToken")!; // set your bot token in appsettings.json
 
+var token = Environment.GetEnvironmentVariable("BotToken")!; // set your bot token in appsettings.json
 var webhookUrl = Environment.GetEnvironmentVariable("BotWebhookUrl")!; // set your bot token in appsettings.json
+
+//var token = builder.Configuration["BotToken"]!;
 //var webhookUrl = builder.Configuration["BotWebhookUrl"]!;   // set your bot webhook public url in appsettings.json
 
 builder.Services.AddHttpClient("tgwebhook")
@@ -29,16 +30,16 @@ app.MapGet("/bot/setWebhook", async (TelegramBotClient bot) =>
 
 app.MapGet("/", () => "AvanteBot is online!");
 app.MapPost("/bot", OnUpdate);
+app.MapPost("/image", OnGetImage);
 
 app.Run();
 
-async void OnUpdate(TelegramBotClient bot, Update update)
+async void OnGetImage(TelegramBotClient bot, Update update)
 {
     if (update.Message is null) return;
     if (update.Message.Text is null) return;
 
     var msg = update.Message;
-
     if (msg.Text.StartsWith("/image"))
     {
         var query = msg.Text.Replace("/image", "").Trim();
@@ -48,7 +49,10 @@ async void OnUpdate(TelegramBotClient bot, Update update)
             return;
         }
 
-        var searchUrl = $"https://www.googleapis.com/customsearch/v1?q={Uri.EscapeDataString(query)}&searchType=image&key={builder.Configuration["GoogleApiKey"]}&cx={builder.Configuration["GoogleCx"]}";
+        var apiKey = Environment.GetEnvironmentVariable("GoogleApiKey")!;
+        var cx = Environment.GetEnvironmentVariable("GoogleCx")!;
+
+        var searchUrl = $"https://www.googleapis.com/customsearch/v1?q={Uri.EscapeDataString(query)}&searchType=image&key={apiKey}&cx={cx}";
         var result = await http.GetFromJsonAsync<JsonElement>(searchUrl);
 
         if (!result.TryGetProperty("items", out var itemsElement))
@@ -81,8 +85,13 @@ async void OnUpdate(TelegramBotClient bot, Update update)
         imageCache[query].Add(chosen);
         await bot.SendPhoto(msg.Chat.Id, chosen, caption: $"Result for: {query}");
     }
-    else
-    {
-        await bot.SendMessage(msg.Chat.Id, $"{msg.From?.FirstName} said: {msg.Text}\nTry /image <term> to search for an image!");
-    }
+}
+async void OnUpdate(TelegramBotClient bot, Update update)
+{
+    if (update.Message is null) return;
+    if (update.Message.Text is null) return;
+    var msg = update.Message;
+
+    await bot.SendMessage(msg.Chat.Id, $"{msg.From?.FirstName} said: {msg.Text}\nTry /image <term> to search for an image!");
+    
 }
