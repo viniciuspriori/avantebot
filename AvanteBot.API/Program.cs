@@ -63,9 +63,11 @@ app.MapPost("/bot", async (
     return Results.Ok();
 });
 
-app.Run();
+    var apiKey = Environment.GetEnvironmentVariable("GoogleApiKey");
+    var cx = Environment.GetEnvironmentVariable("GoogleCx");
+    var serpApiKey = Environment.GetEnvironmentVariable("SerpApiKey");
 
-// --- 3. Lógica do Bot Refatorada ---
+    List<string> imageLinks = new();
 
 // O manipulador de updates principal, que delega para métodos mais específicos.
 async Task HandleUpdateAsync(
@@ -78,13 +80,23 @@ async Task HandleUpdateAsync(
 {
     try
     {
-        var handler = update.Type switch
+        // --- Try Google Custom Search API ---
+        if (!string.IsNullOrWhiteSpace(apiKey) && !string.IsNullOrWhiteSpace(cx))
         {
-            UpdateType.Message when update.Message?.Text is not null => HandleMessageAsync(bot, update.Message, clientFactory, imageCache, logger, cancellationToken),
-            UpdateType.CallbackQuery when update.CallbackQuery is not null => HandleCallbackQueryAsync(bot, update.CallbackQuery, clientFactory, imageCache, logger, cancellationToken),
-            _ => HandleUnknownUpdate(logger, update)
-        };
-        await handler;
+            var searchUrl =
+                $"https://www.googleapis.com/customsearch/v1?q={Uri.EscapeDataString(query)}&searchType=image&key={apiKey}&cx={cx}";
+            var result = await http.GetFromJsonAsync<JsonElement>(searchUrl, cancellationToken);
+
+            if (result.TryGetProperty("items", out var itemsElement))
+            {
+                var googleImages = itemsElement.EnumerateArray()
+                    .Select(i => i.GetProperty("link").GetString())
+                    .Where(IsValidImageUrl)
+                    .ToList();
+
+                imageLinks.AddRange(googleImages);
+            }
+        }
     }
     catch (Exception ex)
     {
@@ -93,18 +105,8 @@ async Task HandleUpdateAsync(
     }
 }
 
-// Manipulador para mensagens de texto
-async Task HandleMessageAsync(
-    TelegramBotClient bot,
-    Message message,
-    IHttpClientFactory clientFactory,
-    ConcurrentDictionary<string, List<string>> imageCache,
-    ILogger logger,
-    CancellationToken cancellationToken)
-{
-    var text = message.Text!;
-    
-    if (text.StartsWith("/image"))
+    // --- Fallback: SerpAPI ---
+    if (imageLinks.Count == 0 && !string.IsNullOrWhiteSpace(serpApiKey))
     {
         var query = text.Replace("/image", "").Trim();
         await SendNextImageAsync(bot, message.Chat.Id, query, message.From?.Username, clientFactory, imageCache, logger, cancellationToken);
@@ -116,25 +118,20 @@ async Task HandleMessageAsync(
     }
 }
 
-// Manipulador para cliques em botões
-async Task HandleCallbackQueryAsync(
-    TelegramBotClient bot,
-    CallbackQuery callbackQuery,
-    IHttpClientFactory clientFactory,
-    ConcurrentDictionary<string, List<string>> imageCache,
-    ILogger logger,
-    CancellationToken cancellationToken)
-{
-    const string ImageCallbackPrefix = "NEXT_IMAGE:";
-    
-    // Sempre responda ao callback para remover o "loading" no cliente do usuário.
-    await bot.AnswerCallbackQueryAsync(callbackQuery.Id, cancellationToken: cancellationToken);
-    
-    if (callbackQuery.Data is { } data && data.StartsWith(ImageCallbackPrefix))
-    {
-        var query = data.Replace(ImageCallbackPrefix, "");
-        var chatId = callbackQuery.Message?.Chat.Id ?? callbackQuery.From.Id;
-        await SendNextImageAsync(bot, chatId, query, callbackQuery.From.Username, clientFactory, imageCache, logger, cancellationToken);
+            if (serpResult.TryGetProperty("images_results", out var serpItems))
+            {
+                var serpImages = serpItems.EnumerateArray()
+                    .Select(i => i.GetProperty("original").GetString())
+                    .Where(IsValidImageUrl)
+                    .ToList();
+
+                imageLinks.AddRange(serpImages);
+            }
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"SerpAPI fallback failed: {ex.Message}");
+        }
     }
 }
 
@@ -144,53 +141,59 @@ Task HandleUnknownUpdate(ILogger logger, Update update)
     return Task.CompletedTask;
 }
 
-
-// A função principal de busca e envio de imagens, agora mais robusta.
-async Task SendNextImageAsync(
-    TelegramBotClient bot,
-    long chatId,
-    string query,
-    string? username,
-    IHttpClientFactory clientFactory,
-    ConcurrentDictionary<string, List<string>> imageCache,
-    ILogger logger,
-    CancellationToken cancellationToken)
-{
-    if (string.IsNullOrWhiteSpace(query))
+    if (imageLinks.Count == 0)
     {
-        await bot.SendTextMessageAsync(chatId, "Por favor, especifique o que você quer buscar. Ex: `/image gatos`", cancellationToken: cancellationToken);
+        await bot.SendMessage(chatId, $"No valid images found for '{query}'.", cancellationToken: cancellationToken);
         return;
     }
 
-    // --- 4. Busca de Imagens com Fallback ---
-    List<string> items = await FetchImageLinksAsync(query, clientFactory, logger, cancellationToken);
+    // --- Image caching logic ---
+    if (!imageCache.ContainsKey(query))
+        imageCache[query] = new List<string>();
 
-    if (items.Count == 0)
-    {
-        await bot.SendTextMessageAsync(chatId, $"Nenhuma imagem encontrada para '{query}'.", cancellationToken: cancellationToken);
-        return;
-    }
-    
-    // --- 5. Lógica de Cache Thread-Safe ---
-    var usedImages = imageCache.GetOrAdd(query, _ => new List<string>());
-    
-    var remaining = items.Except(usedImages).ToList();
+    var remaining = imageLinks.Except(imageCache[query]).ToList();
     if (remaining.Count == 0)
     {
-        // Se todas as imagens já foram vistas, limpa o cache para essa busca e recomeça.
-        imageCache.TryRemove(query, out _);
-        usedImages = imageCache.GetOrAdd(query, _ => new List<string>());
-        remaining = items;
-        await bot.SendTextMessageAsync(chatId, $"Você já viu todas as imagens! Resetando o ciclo para '{query}'.", cancellationToken: cancellationToken);
+        imageCache[query].Clear();
+        remaining = imageLinks;
     }
 
     var random = new Random();
-    var chosenUrl = remaining[random.Next(remaining.Count)];
-    usedImages.Add(chosenUrl);
+    var chosen = remaining[random.Next(remaining.Count)]!;
+    imageCache[query].Add(chosen);
 
-    // --- 6. Envio com Tratamento de Erro Específico ---
-    var caption = $"Resultado para: \"{query}\"";
-    if (username != null) caption += $" pedido por @{username}";
+    var caption = $"Result for: \"{query}\"";
+    if (username != null)
+        caption += $" requested by @{username}";
+
+    var callbackData = $"{ImageCallbackPrefix}{query}";
+    var inlineKeyboard = new InlineKeyboardMarkup(
+        InlineKeyboardButton.WithCallbackData("🖼️ More Images", callbackData)
+    );
+
+    await bot.SendPhoto(
+        chatId: chatId,
+        photo: InputFile.FromUri(chosen),
+        caption: caption,
+        replyMarkup: inlineKeyboard,
+        cancellationToken: cancellationToken
+    );
+}
+
+// --- Helper method ---
+bool IsValidImageUrl(string? url)
+{
+    if (string.IsNullOrWhiteSpace(url))
+        return false;
+
+    url = url.ToLowerInvariant();
+
+    // Filter only real image extensions
+    string[] validExtensions = [".jpg", ".jpeg", ".png", ".gif", ".webp"];
+    return url.StartsWith("http") && validExtensions.Any(url.EndsWith);
+}
+
+
 
     var callbackData = $"NEXT_IMAGE:{query}";
     var inlineKeyboard = new InlineKeyboardMarkup(InlineKeyboardButton.WithCallbackData("🖼️ Mais Imagens", callbackData));
@@ -275,11 +278,11 @@ async Task<List<string>> FetchImageLinksAsync(
         {
             logger.LogWarning(ex, "SerpAPI request failed.");
         }
-        catch(JsonException ex)
+        if (msg.Text.StartsWith("/teste"))
         {
             logger.LogWarning(ex, "Failed to parse JSON from SerpAPI.");
         }
     }
-    
-    return new List<string>(); // Retorna lista vazia se tudo falhar
 }
+
+
