@@ -240,7 +240,7 @@ async Task<List<string>> FetchImageLinksAsync(
             {
                 var links = itemsElement.EnumerateArray()
                     .Select(i => i.TryGetProperty("link", out var linkProp) ? linkProp.GetString() : null)
-                    .Where(s => !string.IsNullOrEmpty(s))
+                    .Where(IsValidImageUrl)
                     .ToList();
                 if (links.Any()) return links!;
             }
@@ -266,7 +266,7 @@ async Task<List<string>> FetchImageLinksAsync(
             {
                 var links = serpItems.EnumerateArray()
                     .Select(i => i.TryGetProperty("original", out var linkProp) ? linkProp.GetString() : null)
-                    .Where(s => !string.IsNullOrEmpty(s))
+                    .Where(IsValidImageUrl)
                     .ToList();
                 if (links.Any()) return links!;
             }
@@ -282,4 +282,18 @@ async Task<List<string>> FetchImageLinksAsync(
     }
 
     return new List<string>(); // Retorna lista vazia se tudo falhar
+}
+
+
+// --- Helper method ---
+bool IsValidImageUrl(string? url)
+{
+    if (string.IsNullOrWhiteSpace(url))
+        return false;
+
+    url = url.ToLowerInvariant();
+
+    // Filter only real image extensions
+    string[] validExtensions = [".jpg", ".jpeg", ".png", ".gif", ".webp"];
+    return url.StartsWith("http") && validExtensions.Any(url.EndsWith);
 }
