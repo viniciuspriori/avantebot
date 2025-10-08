@@ -167,11 +167,8 @@ async Task SendNextImageAsync(
         await bot.SendTextMessageAsync(chatId, $"Você já viu todas as imagens! Resetando o ciclo para '{query}'.", cancellationToken: cancellationToken);
     }
 
-    // --- NOVA LÓGICA DE TENTATIVAS ---
-    
-    var random = new Random();
-    // Embaralha a lista de URLs restantes para tentar em ordem aleatória
-    var shuffledUrls = remaining.OrderBy(_ => random.Next()).ToList();
+    // --- LÓGICA DE TENTATIVAS ---
+    var shuffledUrls = remaining.OrderBy(_ => Random.Shared.Next()).ToList();
 
     bool imageSentSuccessfully = false;
     foreach (var urlToTry in shuffledUrls)
@@ -192,88 +189,24 @@ async Task SendNextImageAsync(
             );
 
             // Se chegou aqui, a imagem foi enviada com sucesso!
-            usedImages.Add(urlToTry); // Adiciona a URL bem-sucedida ao cache
-            imageSentSuccessfully = true; // Marca que tivemos sucesso
-            break; // Sai do loop, pois nosso trabalho está feito
+            usedImages.Add(urlToTry);
+            imageSentSuccessfully = true;
+            break; // Sai do loop
         }
         catch (ApiRequestException apiEx)
         {
-            // O Telegram rejeitou a URL. Logamos o erro e continuamos para a próxima.
             logger.LogWarning("Falha ao enviar imagem da URL {Url}. Motivo: {Error}. Tentando a próxima.", urlToTry, apiEx.Message);
-            // NENHUMA MENSAGEM É ENVIADA AO USUÁRIO AQUI, o bot simplesmente tenta a próxima URL.
         }
         catch (Exception ex)
         {
-            // Um erro inesperado aconteceu. Logamos e tentamos a próxima.
             logger.LogError(ex, "Erro inesperado ao enviar a URL {Url}.", urlToTry);
         }
     }
 
     // --- MENSAGEM DE FALHA FINAL ---
-    // Se, após o loop, nenhuma imagem foi enviada com sucesso, informamos o usuário.
     if (!imageSentSuccessfully)
     {
         await bot.SendTextMessageAsync(chatId, $"Sinto muito, tentei encontrar imagens para '{query}', mas os links encontrados estavam protegidos ou quebrados.", cancellationToken: cancellationToken);
-    }
-}
-{
-    if (string.IsNullOrWhiteSpace(query))
-    {
-        await bot.SendTextMessageAsync(chatId, "Por favor, especifique o que você quer buscar. Ex: `/image gatos`", cancellationToken: cancellationToken);
-        return;
-    }
-
-    // --- 4. Busca de Imagens com Fallback ---
-    List<string> items = await FetchImageLinksAsync(query, clientFactory, logger, cancellationToken);
-
-    if (items.Count == 0)
-    {
-        await bot.SendTextMessageAsync(chatId, $"Nenhuma imagem encontrada para '{query}'.", cancellationToken: cancellationToken);
-        return;
-    }
-    
-    // --- 5. Lógica de Cache Thread-Safe ---
-    var usedImages = imageCache.GetOrAdd(query, _ => new List<string>());
-    
-    var remaining = items.Except(usedImages).ToList();
-    if (remaining.Count == 0)
-    {
-        imageCache.TryRemove(query, out _);
-        usedImages = imageCache.GetOrAdd(query, _ => new List<string>());
-        remaining = items;
-        await bot.SendTextMessageAsync(chatId, $"Você já viu todas as imagens! Resetando o ciclo para '{query}'.", cancellationToken: cancellationToken);
-    }
-
-    var random = new Random();
-    var chosenUrl = remaining[random.Next(remaining.Count)];
-    usedImages.Add(chosenUrl);
-
-    // --- 6. Envio com Tratamento de Erro Específico ---
-    var caption = $"Resultado para: \"{query}\"";
-    if (username != null) caption += $" pedido por @{username}";
-
-    var callbackData = $"NEXT_IMAGE:{query}";
-    var inlineKeyboard = new InlineKeyboardMarkup(InlineKeyboardButton.WithCallbackData("🖼️ Mais Imagens", callbackData));
-
-    try
-    {
-        await bot.SendPhotoAsync(
-            chatId: chatId,
-            photo: InputFile.FromUri(chosenUrl),
-            caption: caption,
-            replyMarkup: inlineKeyboard,
-            cancellationToken: cancellationToken
-        );
-    }
-    catch (ApiRequestException apiEx)
-    {
-        logger.LogError(apiEx, "Telegram API error while sending photo for query '{Query}'. URL: {Url}", query, chosenUrl);
-        await bot.SendTextMessageAsync(chatId, "Desculpe, não consegui enviar essa imagem. Pode ser um link inválido ou temporariamente indisponível.", cancellationToken: cancellationToken);
-    }
-    catch (Exception ex)
-    {
-        logger.LogError(ex, "Unexpected error while sending photo for query '{Query}'. URL: {Url}", query, chosenUrl);
-        await bot.SendTextMessageAsync(chatId, "Ocorreu um erro inesperado ao tentar enviar a imagem.", cancellationToken: cancellationToken);
     }
 }
 
@@ -299,8 +232,7 @@ async Task<List<string>> FetchImageLinksAsync(
             {
                 var links = itemsElement.EnumerateArray()
                     .Select(i => i.TryGetProperty("link", out var linkProp) ? linkProp.GetString() : null)
-                    .Where(s => !string.IsNullOrEmpty(s))
-                    .Where(IsValidImageUrl)
+                    .Where(s => !string.IsNullOrEmpty(s) && IsValidImageUrl(s))
                     .ToList();
                 if (links.Any()) return links!;
             }
@@ -326,8 +258,7 @@ async Task<List<string>> FetchImageLinksAsync(
             {
                 var links = serpItems.EnumerateArray()
                     .Select(i => i.TryGetProperty("original", out var linkProp) ? linkProp.GetString() : null)
-                    .Where(s => !string.IsNullOrEmpty(s))
-                    .Where(IsValidImageUrl)
+                    .Where(s => !string.IsNullOrEmpty(s) && IsValidImageUrl(s))
                     .ToList();
                 if (links.Any()) return links!;
             }
@@ -349,9 +280,8 @@ async Task<List<string>> FetchImageLinksAsync(
 
 /// <summary>
 /// Uma lista de extensões de arquivo de imagem válidas.
-/// Usar HashSet para uma verificação rápida e ignorar maiúsculas/minúsculas.
 /// </summary>
-private static readonly HashSet<string> ValidImageExtensions = new(StringComparer.OrdinalIgnoreCase)
+static readonly HashSet<string> ValidImageExtensions = new(StringComparer.OrdinalIgnoreCase)
 {
     ".jpg", ".jpeg", ".png", ".gif", ".webp", ".bmp"
 };
@@ -359,24 +289,19 @@ private static readonly HashSet<string> ValidImageExtensions = new(StringCompare
 /// <summary>
 /// Verifica se uma URL aponta para um arquivo de imagem com base na sua extensão.
 /// </summary>
-/// <param name="url">A URL a ser verificada.</param>
-/// <returns>True se for uma URL de imagem válida, False caso contrário.</returns>
-private static bool IsValidImageUrl(string? url)
+static bool IsValidImageUrl(string? url)
 {
     if (string.IsNullOrWhiteSpace(url))
     {
         return false;
     }
 
-    // Usa a classe Uri para lidar corretamente com URLs que possam ter query strings (ex: ?width=100)
     if (!Uri.TryCreate(url, UriKind.Absolute, out var uri))
     {
         return false;
     }
 
-    // Pega a extensão do caminho do arquivo na URL
     var extension = Path.GetExtension(uri.AbsolutePath);
-
-    // Verifica se a extensão não está vazia e se está na nossa lista de extensões válidas
+    
     return !string.IsNullOrEmpty(extension) && ValidImageExtensions.Contains(extension);
 }
