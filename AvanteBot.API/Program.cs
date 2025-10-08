@@ -232,7 +232,7 @@ async Task<List<string>> FetchImageLinksAsync(
             {
                 var links = itemsElement.EnumerateArray()
                     .Select(i => i.TryGetProperty("link", out var linkProp) ? linkProp.GetString() : null)
-                    .Where(s => !string.IsNullOrEmpty(s) && IsValidImageUrl(s))
+                    .Where(s => !string.IsNullOrEmpty(s) && ImageUrlHelper.IsValidImageUrl(s))
                     .ToList();
                 if (links.Any()) return links!;
             }
@@ -279,29 +279,35 @@ async Task<List<string>> FetchImageLinksAsync(
 // --- 7. Funções Auxiliares ---
 
 /// <summary>
-/// Uma lista de extensões de arquivo de imagem válidas.
+/// Classe utilitária para validação de URLs de imagens.
 /// </summary>
-static readonly HashSet<string> ValidImageExtensions = new(StringComparer.OrdinalIgnoreCase)
+static class ImageUrlHelper
 {
-    ".jpg", ".jpeg", ".png", ".gif", ".webp", ".bmp"
-};
-
-/// <summary>
-/// Verifica se uma URL aponta para um arquivo de imagem com base na sua extensão.
-/// </summary>
-static bool IsValidImageUrl(string? url)
-{
-    if (string.IsNullOrWhiteSpace(url))
+    /// <summary>
+    /// Uma lista de extensões de arquivo de imagem válidas.
+    /// </summary>
+    public static readonly HashSet<string> ValidImageExtensions = new HashSet<string>(StringComparer.OrdinalIgnoreCase)
     {
-        return false;
-    }
+        ".jpg", ".jpeg", ".png", ".gif", ".webp", ".bmp"
+    };
 
-    if (!Uri.TryCreate(url, UriKind.Absolute, out var uri))
+    /// <summary>
+    /// Verifica se uma URL aponta para um arquivo de imagem com base na sua extensão.
+    /// </summary>
+    public static bool IsValidImageUrl(string? url)
     {
-        return false;
-    }
+        if (string.IsNullOrWhiteSpace(url))
+        {
+            return false;
+        }
 
-    var extension = Path.GetExtension(uri.AbsolutePath);
-    
-    return !string.IsNullOrEmpty(extension) && ValidImageExtensions.Contains(extension);
+        if (!Uri.TryCreate(url, UriKind.Absolute, out var uri))
+        {
+            return false;
+        }
+
+        var extension = Path.GetExtension(uri.AbsolutePath);
+
+        return !string.IsNullOrEmpty(extension) && ValidImageExtensions.Contains(extension);
+    }
 }
