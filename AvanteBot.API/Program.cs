@@ -148,6 +148,81 @@ async Task SendNextImageAsync(
         return;
     }
 
+    List<string> items = await FetchImageLinksAsync(query, clientFactory, logger, cancellationToken);
+
+    if (items.Count == 0)
+    {
+        await bot.SendTextMessageAsync(chatId, $"Nenhuma imagem encontrada para '{query}'.", cancellationToken: cancellationToken);
+        return;
+    }
+    
+    var usedImages = imageCache.GetOrAdd(query, _ => new List<string>());
+    
+    var remaining = items.Except(usedImages).ToList();
+    if (remaining.Count == 0)
+    {
+        imageCache.TryRemove(query, out _);
+        usedImages = imageCache.GetOrAdd(query, _ => new List<string>());
+        remaining = items;
+        await bot.SendTextMessageAsync(chatId, $"Você já viu todas as imagens! Resetando o ciclo para '{query}'.", cancellationToken: cancellationToken);
+    }
+
+    // --- NOVA LÓGICA DE TENTATIVAS ---
+    
+    var random = new Random();
+    // Embaralha a lista de URLs restantes para tentar em ordem aleatória
+    var shuffledUrls = remaining.OrderBy(_ => random.Next()).ToList();
+
+    bool imageSentSuccessfully = false;
+    foreach (var urlToTry in shuffledUrls)
+    {
+        var caption = $"Resultado para: \"{query}\"";
+        if (username != null) caption += $" pedido por @{username}";
+        var callbackData = $"NEXT_IMAGE:{query}";
+        var inlineKeyboard = new InlineKeyboardMarkup(InlineKeyboardButton.WithCallbackData("🖼️ Mais Imagens", callbackData));
+
+        try
+        {
+            await bot.SendPhotoAsync(
+                chatId: chatId,
+                photo: InputFile.FromUri(urlToTry),
+                caption: caption,
+                replyMarkup: inlineKeyboard,
+                cancellationToken: cancellationToken
+            );
+
+            // Se chegou aqui, a imagem foi enviada com sucesso!
+            usedImages.Add(urlToTry); // Adiciona a URL bem-sucedida ao cache
+            imageSentSuccessfully = true; // Marca que tivemos sucesso
+            break; // Sai do loop, pois nosso trabalho está feito
+        }
+        catch (ApiRequestException apiEx)
+        {
+            // O Telegram rejeitou a URL. Logamos o erro e continuamos para a próxima.
+            logger.LogWarning("Falha ao enviar imagem da URL {Url}. Motivo: {Error}. Tentando a próxima.", urlToTry, apiEx.Message);
+            // NENHUMA MENSAGEM É ENVIADA AO USUÁRIO AQUI, o bot simplesmente tenta a próxima URL.
+        }
+        catch (Exception ex)
+        {
+            // Um erro inesperado aconteceu. Logamos e tentamos a próxima.
+            logger.LogError(ex, "Erro inesperado ao enviar a URL {Url}.", urlToTry);
+        }
+    }
+
+    // --- MENSAGEM DE FALHA FINAL ---
+    // Se, após o loop, nenhuma imagem foi enviada com sucesso, informamos o usuário.
+    if (!imageSentSuccessfully)
+    {
+        await bot.SendTextMessageAsync(chatId, $"Sinto muito, tentei encontrar imagens para '{query}', mas os links encontrados estavam protegidos ou quebrados.", cancellationToken: cancellationToken);
+    }
+}
+{
+    if (string.IsNullOrWhiteSpace(query))
+    {
+        await bot.SendTextMessageAsync(chatId, "Por favor, especifique o que você quer buscar. Ex: `/image gatos`", cancellationToken: cancellationToken);
+        return;
+    }
+
     // --- 4. Busca de Imagens com Fallback ---
     List<string> items = await FetchImageLinksAsync(query, clientFactory, logger, cancellationToken);
 
