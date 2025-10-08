@@ -13,7 +13,6 @@ var services = builder.Services;
 var config = builder.Configuration;
 
 // --- 1. Configuração e Validação ---
-// Valida se as variáveis de ambiente essenciais foram configuradas.
 var botToken = Environment.GetEnvironmentVariable("BotToken") ?? throw new ArgumentNullException("BotToken not set");
 var webhookUrl = Environment.GetEnvironmentVariable("BotWebhookUrl") ?? throw new ArgumentNullException("BotWebhookUrl not set");
 
@@ -21,12 +20,9 @@ services.AddHttpClient("tgwebhook")
         .RemoveAllLoggers()
         .AddTypedClient(httpClient => new TelegramBotClient(botToken, httpClient));
 
-// Usar um HttpClientFactory para o bot é uma boa prática.
-services.AddHttpClient(); 
+services.AddHttpClient();
 
 // --- 2. Injeção de Dependência e Estado ---
-// Usando um Singleton para o cache de imagens para que ele seja compartilhado por toda a aplicação.
-// ConcurrentDictionary é thread-safe, evitando problemas de concorrência.
 services.AddSingleton<ConcurrentDictionary<string, List<string>>>(new ConcurrentDictionary<string, List<string>>());
 
 var app = builder.Build();
@@ -48,8 +44,6 @@ app.MapGet("/bot/setWebhook", async (TelegramBotClient bot, ILogger<Program> log
 
 app.MapGet("/", () => "AvanteBot is online!");
 
-// O endpoint principal agora usa injeção de dependência para obter os serviços necessários.
-// Retorna Results.Ok() para que o Telegram saiba que o update foi recebido.
 app.MapPost("/bot", async (
     [FromBody] Update update,
     [FromServices] TelegramBotClient bot,
@@ -58,7 +52,6 @@ app.MapPost("/bot", async (
     [FromServices] ILogger<Program> logger,
     CancellationToken cancellationToken) =>
 {
-    // O manipulador principal agora é `async Task` e tem um try-catch global.
     await HandleUpdateAsync(bot, update, clientFactory, imageCache, logger, cancellationToken);
     return Results.Ok();
 });
@@ -67,7 +60,6 @@ app.Run();
 
 // --- 3. Lógica do Bot Refatorada ---
 
-// O manipulador de updates principal, que delega para métodos mais específicos.
 async Task HandleUpdateAsync(
     TelegramBotClient bot,
     Update update,
@@ -88,12 +80,10 @@ async Task HandleUpdateAsync(
     }
     catch (Exception ex)
     {
-        // Pega qualquer exceção não tratada nos handlers específicos.
         logger.LogError(ex, "An unhandled error occurred while processing update {UpdateId}", update.Id);
     }
 }
 
-// Manipulador para mensagens de texto
 async Task HandleMessageAsync(
     TelegramBotClient bot,
     Message message,
@@ -116,7 +106,6 @@ async Task HandleMessageAsync(
     }
 }
 
-// Manipulador para cliques em botões
 async Task HandleCallbackQueryAsync(
     TelegramBotClient bot,
     CallbackQuery callbackQuery,
@@ -127,7 +116,6 @@ async Task HandleCallbackQueryAsync(
 {
     const string ImageCallbackPrefix = "NEXT_IMAGE:";
     
-    // Sempre responda ao callback para remover o "loading" no cliente do usuário.
     await bot.AnswerCallbackQueryAsync(callbackQuery.Id, cancellationToken: cancellationToken);
     
     if (callbackQuery.Data is { } data && data.StartsWith(ImageCallbackPrefix))
@@ -144,8 +132,6 @@ Task HandleUnknownUpdate(ILogger logger, Update update)
     return Task.CompletedTask;
 }
 
-
-// A função principal de busca e envio de imagens, agora mais robusta. a
 async Task SendNextImageAsync(
     TelegramBotClient bot,
     long chatId,
@@ -177,7 +163,6 @@ async Task SendNextImageAsync(
     var remaining = items.Except(usedImages).ToList();
     if (remaining.Count == 0)
     {
-        // Se todas as imagens já foram vistas, limpa o cache para essa busca e recomeça.
         imageCache.TryRemove(query, out _);
         usedImages = imageCache.GetOrAdd(query, _ => new List<string>());
         remaining = items;
@@ -217,7 +202,6 @@ async Task SendNextImageAsync(
     }
 }
 
-// Função auxiliar para buscar imagens, isolando a lógica de rede.
 async Task<List<string>> FetchImageLinksAsync(
     string query,
     IHttpClientFactory clientFactory,
@@ -241,6 +225,7 @@ async Task<List<string>> FetchImageLinksAsync(
                 var links = itemsElement.EnumerateArray()
                     .Select(i => i.TryGetProperty("link", out var linkProp) ? linkProp.GetString() : null)
                     .Where(s => !string.IsNullOrEmpty(s))
+                    .Where(IsValidImageUrl)
                     .ToList();
                 if (links.Any()) return links!;
             }
@@ -267,6 +252,7 @@ async Task<List<string>> FetchImageLinksAsync(
                 var links = serpItems.EnumerateArray()
                     .Select(i => i.TryGetProperty("original", out var linkProp) ? linkProp.GetString() : null)
                     .Where(s => !string.IsNullOrEmpty(s))
+                    .Where(IsValidImageUrl)
                     .ToList();
                 if (links.Any()) return links!;
             }
@@ -282,4 +268,40 @@ async Task<List<string>> FetchImageLinksAsync(
     }
     
     return new List<string>(); // Retorna lista vazia se tudo falhar
+}
+
+// --- 7. Funções Auxiliares ---
+
+/// <summary>
+/// Uma lista de extensões de arquivo de imagem válidas.
+/// Usar HashSet para uma verificação rápida e ignorar maiúsculas/minúsculas.
+/// </summary>
+private static readonly HashSet<string> ValidImageExtensions = new(StringComparer.OrdinalIgnoreCase)
+{
+    ".jpg", ".jpeg", ".png", ".gif", ".webp", ".bmp"
+};
+
+/// <summary>
+/// Verifica se uma URL aponta para um arquivo de imagem com base na sua extensão.
+/// </summary>
+/// <param name="url">A URL a ser verificada.</param>
+/// <returns>True se for uma URL de imagem válida, False caso contrário.</returns>
+private static bool IsValidImageUrl(string? url)
+{
+    if (string.IsNullOrWhiteSpace(url))
+    {
+        return false;
+    }
+
+    // Usa a classe Uri para lidar corretamente com URLs que possam ter query strings (ex: ?width=100)
+    if (!Uri.TryCreate(url, UriKind.Absolute, out var uri))
+    {
+        return false;
+    }
+
+    // Pega a extensão do caminho do arquivo na URL
+    var extension = Path.GetExtension(uri.AbsolutePath);
+
+    // Verifica se a extensão não está vazia e se está na nossa lista de extensões válidas
+    return !string.IsNullOrEmpty(extension) && ValidImageExtensions.Contains(extension);
 }
