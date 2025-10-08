@@ -14,12 +14,12 @@ using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.Http;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
+
+// Core Telegram.Bot functionality and extension methods
 using Telegram.Bot;
 using Telegram.Bot.Exceptions;
 using Telegram.Bot.Types;
 using Telegram.Bot.Types.Enums;
-using Telegram.Bot.Types.InputFiles;
-using Telegram.Bot.Types.InputMedia;
 using Telegram.Bot.Types.ReplyMarkups;
 
 // --- Funções Auxiliares ---
@@ -80,15 +80,11 @@ public class Program
 
         services.AddHttpClient();
 
-        // Telegram bot client via DI (interface)
-        services.AddHttpClient("tgwebhook")
-            .AddTypedClient<ITelegramBotClient>(httpClient => new TelegramBotClient(botToken, httpClient));
+        // Telegram bot client via DI
+        services.AddHttpClient<ITelegramBotClient>(httpClient => new TelegramBotClient(botToken, httpClient));
 
         // --- 2. Estado thread-safe ---
-        // Cache de imagens já usadas por query CANÔNICA (case-insensitive)
         services.AddSingleton(new ConcurrentDictionary<string, ConcurrentDictionary<string, byte>>(StringComparer.OrdinalIgnoreCase));
-
-        // Mapa token -> (canonicalQuery, originalQuery)
         services.AddSingleton(new ConcurrentDictionary<string, QueryTokenInfo>());
 
         var app = builder.Build();
@@ -98,7 +94,8 @@ public class Program
         {
             try
             {
-                await bot.SetWebhookAsync(
+                // v22.x: Renomeado para SetWebhook (sem Async)
+                await bot.SetWebhook(
                     url: webhookUrl,
                     allowedUpdates: new[] { UpdateType.Message, UpdateType.CallbackQuery },
                     secretToken: webhookSecret,
@@ -117,7 +114,8 @@ public class Program
 
         app.MapGet("/bot/webhookInfo", async ([FromServices] ITelegramBotClient bot, CancellationToken ct) =>
         {
-            var info = await bot.GetWebhookInfoAsync(ct);
+            // v22.x: Renomeado para GetWebhookInfo (sem Async)
+            var info = await bot.GetWebhookInfo(ct);
             return Results.Json(info);
         });
 
@@ -190,42 +188,37 @@ public class Program
     {
         var text = message.Text ?? string.Empty;
 
-        // Extrai comando usando entities para suportar "/image@BotName"
         var cmdEnt = message.Entities?.FirstOrDefault(e => e.Type == MessageEntityType.BotCommand && e.Offset == 0);
         if (cmdEnt is null)
             return;
 
-        var rawCmd = text.Substring(cmdEnt.Offset, cmdEnt.Length); // ex.: "/image@SeuBot"
-        var baseCmd = rawCmd.Split('@')[0]; // "/image"
+        var rawCmd = text.Substring(cmdEnt.Offset, cmdEnt.Length);
+        var baseCmd = rawCmd.Split('@')[0];
         var args = text[(cmdEnt.Offset + cmdEnt.Length)..].Trim();
 
         switch (baseCmd)
         {
             case "/image":
-                var originalQuery = args;
                 await SendNextImageToChatAsync(
-                    bot, message.Chat.Id, originalQuery, message.From?.Username,
+                    bot, message.Chat.Id, args, message.From?.Username,
                     clientFactory, imageCache, tokenMap, logger, cancellationToken);
                 break;
 
             case "/teste":
-                var query = args;
-                await bot.SendTextMessageAsync(
+                // v22.x: Renomeado para SendMessage (sem Async)
+                await bot.SendMessage(
                     chatId: message.Chat.Id,
-                    text: $"{message.From?.FirstName} disse: {query}\nExperimente /image <termo> para procurar uma imagem!",
+                    text: $"{message.From?.FirstName} disse: {args}\nExperimente /image <termo> para procurar uma imagem!",
                     cancellationToken: cancellationToken);
                 break;
 
             case "/start":
             case "/help":
-                await bot.SendTextMessageAsync(
+                // v22.x: Renomeado para SendMessage (sem Async)
+                await bot.SendMessage(
                     chatId: message.Chat.Id,
                     text: "Olá! Use:\n- /image <termo> para procurar imagens\n- /teste <texto> para um eco de teste",
                     cancellationToken: cancellationToken);
-                break;
-
-            default:
-                // Ignora outros comandos
                 break;
         }
     }
@@ -239,20 +232,21 @@ public class Program
         ILogger<Program> logger,
         CancellationToken cancellationToken)
     {
-        await bot.AnswerCallbackQueryAsync(callbackQuery.Id, cancellationToken: cancellationToken);
+        // v22.x: Renomeado para AnswerCallbackQuery (sem Async)
+        await bot.AnswerCallbackQuery(callbackQuery.Id, cancellationToken: cancellationToken);
 
         if (callbackQuery.Data is not string data)
             return;
 
-        const string Prefix = "NI:"; // Next Image
+        const string Prefix = "NI:";
         if (!data.StartsWith(Prefix, StringComparison.Ordinal))
             return;
 
         var token = data.Substring(Prefix.Length);
         if (!tokenMap.TryGetValue(token, out var info))
         {
-            // Sessão/token expirado (ex.: após restart). Pede para o usuário tentar de novo.
-            await bot.AnswerCallbackQueryAsync(
+            // v22.x: Renomeado para AnswerCallbackQuery (sem Async)
+            await bot.AnswerCallbackQuery(
                 callbackQuery.Id,
                 text: "Sessão expirada. Envie o comando /image novamente.",
                 showAlert: false,
@@ -260,27 +254,18 @@ public class Program
             return;
         }
 
-        var canonicalQuery = info.CanonicalQuery;
-        var originalQuery = info.OriginalQuery;
-
         if (callbackQuery.Message is not null)
         {
-            // Mensagem normal em chat -> envia uma nova foto no chat
             var chatId = callbackQuery.Message.Chat.Id;
             await SendNextImageToChatAsync(
-                bot, chatId, originalQuery, callbackQuery.From?.Username,
+                bot, chatId, info.OriginalQuery, callbackQuery.From?.Username,
                 clientFactory, imageCache, tokenMap, logger, cancellationToken);
         }
         else if (!string.IsNullOrEmpty(callbackQuery.InlineMessageId))
         {
-            // Mensagem inline -> edita a mesma mensagem
             await EditInlineMessageToNextImageAsync(
-                bot, callbackQuery.InlineMessageId!, originalQuery, callbackQuery.From?.Username,
+                bot, callbackQuery.InlineMessageId!, info.OriginalQuery, callbackQuery.From?.Username,
                 clientFactory, imageCache, tokenMap, logger, cancellationToken);
-        }
-        else
-        {
-            logger.LogWarning("CallbackQuery sem Message e sem InlineMessageId. Ignorando.");
         }
     }
 
@@ -304,7 +289,8 @@ public class Program
     {
         if (string.IsNullOrWhiteSpace(originalQuery))
         {
-            await bot.SendTextMessageAsync(
+            // v22.x: Renomeado para SendMessage (sem Async)
+            await bot.SendMessage(
                 chatId,
                 "Por favor, especifique o que você quer procurar. Exemplo: /image gatos",
                 cancellationToken: cancellationToken);
@@ -316,7 +302,8 @@ public class Program
         var items = await FetchImageLinksAsync(originalQuery, clientFactory, logger, cancellationToken);
         if (items.Count == 0)
         {
-            await bot.SendTextMessageAsync(
+            // v22.x: Renomeado para SendMessage (sem Async)
+            await bot.SendMessage(
                 chatId,
                 $"Nenhuma imagem encontrada para '{originalQuery}'.",
                 cancellationToken: cancellationToken);
@@ -330,13 +317,13 @@ public class Program
         {
             usedSet.Clear();
             remaining = items;
-            await bot.SendTextMessageAsync(
+            // v22.x: Renomeado para SendMessage (sem Async)
+            await bot.SendMessage(
                 chatId,
                 $"Você já viu todas as imagens! Reiniciando a lista para '{originalQuery}'.",
                 cancellationToken: cancellationToken);
         }
 
-        // Garante token curto e mapeamento
         var token = ImageUrlHelper.ShortTokenFor(canonicalQuery);
         tokenMap[token] = new QueryTokenInfo(canonicalQuery, originalQuery);
 
@@ -353,9 +340,10 @@ public class Program
         {
             try
             {
-                await bot.SendPhotoAsync(
+                // v22.x: Renomeado para SendPhoto (sem Async)
+                await bot.SendPhoto(
                     chatId: chatId,
-                    photo: InputFile.FromUri(urlToTry),
+                    photo: new InputFileUrl(urlToTry),
                     caption: caption,
                     replyMarkup: inlineKeyboard,
                     cancellationToken: cancellationToken);
@@ -376,7 +364,8 @@ public class Program
 
         if (!success)
         {
-            await bot.SendTextMessageAsync(
+            // v22.x: Renomeado para SendMessage (sem Async)
+            await bot.SendMessage(
                 chatId,
                 $"Tentei encontrar imagens para '{originalQuery}', mas os links retornados falharam ao enviar. Tente novamente.",
                 cancellationToken: cancellationToken);
@@ -399,7 +388,6 @@ public class Program
         var items = await FetchImageLinksAsync(originalQuery, clientFactory, logger, cancellationToken);
         if (items.Count == 0)
         {
-            // Nada para editar; apenas alerta silencioso
             return;
         }
 
@@ -426,12 +414,13 @@ public class Program
         {
             try
             {
-                var media = new InputMediaPhoto(InputFile.FromUri(urlToTry))
+                var media = new InputMediaPhoto(new InputFileUrl(urlToTry))
                 {
                     Caption = caption
                 };
 
-                await bot.EditMessageMediaAsync(
+                // v22.x: Renomeado para EditMessageMedia (sem Async)
+                await bot.EditMessageMedia(
                     inlineMessageId: inlineMessageId,
                     media: media,
                     replyMarkup: inlineKeyboard,
@@ -478,16 +467,10 @@ public class Program
                     foreach (var item in itemsElement.EnumerateArray())
                     {
                         string? link = item.TryGetProperty("link", out var linkProp) ? linkProp.GetString() : null;
-                        string? mime = item.TryGetProperty("mime", out var mimeProp) ? mimeProp.GetString() : null;
-
-                        if (string.IsNullOrWhiteSpace(link))
-                            continue;
-
-                        bool looksImage = ImageUrlHelper.IsValidImageUrl(link) ||
-                                          (!string.IsNullOrEmpty(mime) && mime.StartsWith("image/", StringComparison.OrdinalIgnoreCase));
-
-                        if (looksImage)
-                            links.Add(link);
+                        if (ImageUrlHelper.IsValidImageUrl(link))
+                        {
+                            links.Add(link!);
+                        }
                     }
                 }
 
@@ -520,16 +503,14 @@ public class Program
                     foreach (var item in serpItems.EnumerateArray())
                     {
                         string? link = item.TryGetProperty("original", out var linkProp) ? linkProp.GetString() : null;
-                        if (!string.IsNullOrWhiteSpace(link))
-                            links.Add(link);
+                        if (ImageUrlHelper.IsValidImageUrl(link))
+                        {
+                            links.Add(link!);
+                        }
                     }
                 }
 
-                links = links
-                    .Where(u => Uri.TryCreate(u, UriKind.Absolute, out var uri) &&
-                                (uri.Scheme == Uri.UriSchemeHttp || uri.Scheme == Uri.UriSchemeHttps))
-                    .Distinct(StringComparer.OrdinalIgnoreCase)
-                    .ToList();
+                links = links.Distinct(StringComparer.OrdinalIgnoreCase).ToList();
 
                 if (links.Any()) return links;
             }
