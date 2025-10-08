@@ -1,4 +1,8 @@
-﻿using System.Collections.Concurrent;
+﻿using System;
+using System.Collections.Concurrent;
+using System.Collections.Generic;
+using System.IO;
+using System.Linq;
 using System.Net.Http.Json;
 using System.Text.Json;
 using Microsoft.AspNetCore.Mvc;
@@ -25,47 +29,13 @@ services.AddHttpClient();
 // --- 2. Injeção de Dependência e Estado ---
 services.AddSingleton<ConcurrentDictionary<string, List<string>>>(new ConcurrentDictionary<string, List<string>>());
 
-var app = builder.Build();
-
-app.MapGet("/bot/setWebhook", async (TelegramBotClient bot, ILogger<Program> logger) =>
-{
-    try
-    {
-        await bot.SetWebhookAsync(webhookUrl);
-        logger.LogInformation("Webhook set successfully to {Url}", webhookUrl);
-        return Results.Ok($"Webhook set to {webhookUrl}");
-    }
-    catch (Exception ex)
-    {
-        logger.LogError(ex, "Failed to set webhook.");
-        return Results.Problem("Failed to set webhook.");
-    }
-});
-
-app.MapGet("/", () => "AvanteBot is online!");
-
-app.MapPost("/bot", async (
-    [FromBody] Update update,
-    [FromServices] TelegramBotClient bot,
-    [FromServices] IHttpClientFactory clientFactory,
-    [FromServices] ConcurrentDictionary<string, List<string>> imageCache,
-    [FromServices] ILogger<Program> logger,
-    CancellationToken cancellationToken) =>
-{
-    await HandleUpdateAsync(bot, update, clientFactory, imageCache, logger, cancellationToken);
-    return Results.Ok();
-});
-
-app.Run();
-
 // --- 3. Lógica do Bot Refatorada ---
-
 async Task HandleUpdateAsync(
     TelegramBotClient bot,
     Update update,
     IHttpClientFactory clientFactory,
     ConcurrentDictionary<string, List<string>> imageCache,
-    ILogger logger,
+    ILogger<Program> logger,
     CancellationToken cancellationToken)
 {
     try
@@ -89,7 +59,7 @@ async Task HandleMessageAsync(
     Message message,
     IHttpClientFactory clientFactory,
     ConcurrentDictionary<string, List<string>> imageCache,
-    ILogger logger,
+    ILogger<Program> logger,
     CancellationToken cancellationToken)
 {
     var text = message.Text!;
@@ -111,7 +81,7 @@ async Task HandleCallbackQueryAsync(
     CallbackQuery callbackQuery,
     IHttpClientFactory clientFactory,
     ConcurrentDictionary<string, List<string>> imageCache,
-    ILogger logger,
+    ILogger<Program> logger,
     CancellationToken cancellationToken)
 {
     const string ImageCallbackPrefix = "NEXT_IMAGE:";
@@ -126,7 +96,7 @@ async Task HandleCallbackQueryAsync(
     }
 }
 
-Task HandleUnknownUpdate(ILogger logger, Update update)
+Task HandleUnknownUpdate(ILogger<Program> logger, Update update)
 {
     logger.LogWarning("Received an unhandled update type: {UpdateType}", update.Type);
     return Task.CompletedTask;
@@ -139,7 +109,7 @@ async Task SendNextImageAsync(
     string? username,
     IHttpClientFactory clientFactory,
     ConcurrentDictionary<string, List<string>> imageCache,
-    ILogger logger,
+    ILogger<Program> logger,
     CancellationToken cancellationToken)
 {
     if (string.IsNullOrWhiteSpace(query))
@@ -213,7 +183,7 @@ async Task SendNextImageAsync(
 async Task<List<string>> FetchImageLinksAsync(
     string query,
     IHttpClientFactory clientFactory,
-    ILogger logger,
+    ILogger<Program> logger,
     CancellationToken cancellationToken)
 {
     var http = clientFactory.CreateClient();
@@ -241,7 +211,7 @@ async Task<List<string>> FetchImageLinksAsync(
         {
             logger.LogWarning(ex, "Google Custom Search API request failed.");
         }
-        catch(JsonException ex)
+        catch (JsonException ex)
         {
             logger.LogWarning(ex, "Failed to parse JSON from Google Custom Search API.");
         }
@@ -258,7 +228,7 @@ async Task<List<string>> FetchImageLinksAsync(
             {
                 var links = serpItems.EnumerateArray()
                     .Select(i => i.TryGetProperty("original", out var linkProp) ? linkProp.GetString() : null)
-                    .Where(s => !string.IsNullOrEmpty(s) && IsValidImageUrl(s))
+                    .Where(s => !string.IsNullOrEmpty(s) && ImageUrlHelper.IsValidImageUrl(s))
                     .ToList();
                 if (links.Any()) return links!;
             }
@@ -267,7 +237,7 @@ async Task<List<string>> FetchImageLinksAsync(
         {
             logger.LogWarning(ex, "SerpAPI request failed.");
         }
-        catch(JsonException ex)
+        catch (JsonException ex)
         {
             logger.LogWarning(ex, "Failed to parse JSON from SerpAPI.");
         }
@@ -276,24 +246,47 @@ async Task<List<string>> FetchImageLinksAsync(
     return new List<string>(); // Retorna lista vazia se tudo falhar
 }
 
-// --- 7. Funções Auxiliares ---
+var app = builder.Build();
 
-/// <summary>
-/// Classe utilitária para validação de URLs de imagens.
-/// </summary>
+app.MapGet("/bot/setWebhook", async (TelegramBotClient bot, ILogger<Program> logger) =>
+{
+    try
+    {
+        await bot.SetWebhookAsync(webhookUrl);
+        logger.LogInformation("Webhook set successfully to {Url}", webhookUrl);
+        return Results.Ok($"Webhook set to {webhookUrl}");
+    }
+    catch (Exception ex)
+    {
+        logger.LogError(ex, "Failed to set webhook.");
+        return Results.Problem("Failed to set webhook.");
+    }
+});
+
+app.MapGet("/", () => "AvanteBot is online!");
+
+app.MapPost("/bot", async (
+    [FromBody] Update update,
+    [FromServices] TelegramBotClient bot,
+    [FromServices] IHttpClientFactory clientFactory,
+    [FromServices] ConcurrentDictionary<string, List<string>> imageCache,
+    [FromServices] ILogger<Program> logger,
+    CancellationToken cancellationToken) =>
+{
+    await HandleUpdateAsync(bot, update, clientFactory, imageCache, logger, cancellationToken);
+    return Results.Ok();
+});
+
+app.Run();
+
+// --- 7. Funções Auxiliares (movida para o final para evitar CS8803) ---
 static class ImageUrlHelper
 {
-    /// <summary>
-    /// Uma lista de extensões de arquivo de imagem válidas.
-    /// </summary>
     public static readonly HashSet<string> ValidImageExtensions = new HashSet<string>(StringComparer.OrdinalIgnoreCase)
     {
         ".jpg", ".jpeg", ".png", ".gif", ".webp", ".bmp"
     };
 
-    /// <summary>
-    /// Verifica se uma URL aponta para um arquivo de imagem com base na sua extensão.
-    /// </summary>
     public static bool IsValidImageUrl(string? url)
     {
         if (string.IsNullOrWhiteSpace(url))
