@@ -17,24 +17,26 @@ var services = builder.Services;
 var config = builder.Configuration;
 
 // --- 1. Configuração e Validação ---
-var botToken = Environment.GetEnvironmentVariable("BotToken") ?? throw new ArgumentNullException("BotToken not set");
-var webhookUrl = Environment.GetEnvironmentVariable("BotWebhookUrl") ?? throw new ArgumentNullException("BotWebhookUrl not set");
+var botToken = Environment.GetEnvironmentVariable("BotToken") 
+    ?? throw new InvalidOperationException("BotToken environment variable not set");
+var webhookUrl = Environment.GetEnvironmentVariable("BotWebhookUrl") 
+    ?? throw new InvalidOperationException("BotWebhookUrl environment variable not set");
 
 services.AddHttpClient("tgwebhook")
-        .RemoveAllLoggers()
         .AddTypedClient(httpClient => new TelegramBotClient(botToken, httpClient));
 
 services.AddHttpClient();
 
-// --- 2. Injeção de Dependência e Estado ---
-services.AddSingleton<ConcurrentDictionary<string, List<string>>>(new ConcurrentDictionary<string, List<string>>());
+// --- 2. Injeção de Dependência e Estado (corrigido para thread-safety) ---
+services.AddSingleton<ConcurrentDictionary<string, ConcurrentBag<string>>>(
+    new ConcurrentDictionary<string, ConcurrentBag<string>>());
 
 // --- 3. Lógica do Bot Refatorada ---
 async Task HandleUpdateAsync(
     TelegramBotClient bot,
     Update update,
     IHttpClientFactory clientFactory,
-    ConcurrentDictionary<string, List<string>> imageCache,
+    ConcurrentDictionary<string, ConcurrentBag<string>> imageCache,
     ILogger<Program> logger,
     CancellationToken cancellationToken)
 {
@@ -58,7 +60,7 @@ async Task HandleMessageAsync(
     TelegramBotClient bot,
     Message message,
     IHttpClientFactory clientFactory,
-    ConcurrentDictionary<string, List<string>> imageCache,
+    ConcurrentDictionary<string, ConcurrentBag<string>> imageCache,
     ILogger<Program> logger,
     CancellationToken cancellationToken)
 {
@@ -72,7 +74,10 @@ async Task HandleMessageAsync(
     else if (text.StartsWith("/teste"))
     {
         var query = text.Replace("/teste", "").Trim();
-        await bot.SendTextMessageAsync(message.Chat.Id, $"{message.From?.FirstName} said: {query}\nTry /image <term> to search for an image!", cancellationToken: cancellationToken);
+        await bot.SendTextMessageAsync(
+            message.Chat.Id, 
+            $"{message.From?.FirstName} said: {query}\nTry /image <term> to search for an image!", 
+            cancellationToken: cancellationToken);
     }
 }
 
@@ -80,7 +85,7 @@ async Task HandleCallbackQueryAsync(
     TelegramBotClient bot,
     CallbackQuery callbackQuery,
     IHttpClientFactory clientFactory,
-    ConcurrentDictionary<string, List<string>> imageCache,
+    ConcurrentDictionary<string, ConcurrentBag<string>> imageCache,
     ILogger<Program> logger,
     CancellationToken cancellationToken)
 {
@@ -108,13 +113,17 @@ async Task SendNextImageAsync(
     string query,
     string? username,
     IHttpClientFactory clientFactory,
-    ConcurrentDictionary<string, List<string>> imageCache,
+    ConcurrentDictionary<string, ConcurrentBag<string>> imageCache,
     ILogger<Program> logger,
     CancellationToken cancellationToken)
 {
     if (string.IsNullOrWhiteSpace(query))
     {
-        await bot.SendTextMessageAsync(chatId, "Por favor, especifique o que você quer buscar. Ex: `/image gatos`", cancellationToken: cancellationToken);
+        await bot.SendTextMessageAsync(
+            chatId, 
+            "Por favor, especifique o que você quer buscar. Ex: `/image gatos`",
+            parseMode: ParseMode.Markdown,
+            cancellationToken: cancellationToken);
         return;
     }
 
@@ -122,19 +131,25 @@ async Task SendNextImageAsync(
 
     if (items.Count == 0)
     {
-        await bot.SendTextMessageAsync(chatId, $"Nenhuma imagem encontrada para '{query}'.", cancellationToken: cancellationToken);
+        await bot.SendTextMessageAsync(
+            chatId, 
+            $"Nenhuma imagem encontrada para '{query}'.", 
+            cancellationToken: cancellationToken);
         return;
     }
     
-    var usedImages = imageCache.GetOrAdd(query, _ => new List<string>());
+    var usedImages = imageCache.GetOrAdd(query, _ => new ConcurrentBag<string>());
     
     var remaining = items.Except(usedImages).ToList();
     if (remaining.Count == 0)
     {
         imageCache.TryRemove(query, out _);
-        usedImages = imageCache.GetOrAdd(query, _ => new List<string>());
+        usedImages = imageCache.GetOrAdd(query, _ => new ConcurrentBag<string>());
         remaining = items;
-        await bot.SendTextMessageAsync(chatId, $"Você já viu todas as imagens! Resetando o ciclo para '{query}'.", cancellationToken: cancellationToken);
+        await bot.SendTextMessageAsync(
+            chatId, 
+            $"Você já viu todas as imagens! Resetando o ciclo para '{query}'.", 
+            cancellationToken: cancellationToken);
     }
 
     // --- LÓGICA DE TENTATIVAS ---
@@ -146,7 +161,8 @@ async Task SendNextImageAsync(
         var caption = $"Resultado para: \"{query}\"";
         if (username != null) caption += $" pedido por @{username}";
         var callbackData = $"NEXT_IMAGE:{query}";
-        var inlineKeyboard = new InlineKeyboardMarkup(InlineKeyboardButton.WithCallbackData("🖼️ Mais Imagens", callbackData));
+        var inlineKeyboard = new InlineKeyboardMarkup(
+            InlineKeyboardButton.WithCallbackData("🖼️ Mais Imagens", callbackData));
 
         try
         {
@@ -176,7 +192,10 @@ async Task SendNextImageAsync(
     // --- MENSAGEM DE FALHA FINAL ---
     if (!imageSentSuccessfully)
     {
-        await bot.SendTextMessageAsync(chatId, $"Sinto muito, tentei encontrar imagens para '{query}', mas os links encontrados estavam protegidos ou quebrados.", cancellationToken: cancellationToken);
+        await bot.SendTextMessageAsync(
+            chatId, 
+            $"Sinto muito, tentei encontrar imagens para '{query}', mas os links encontrados estavam protegidos ou quebrados.", 
+            cancellationToken: cancellationToken);
     }
 }
 
@@ -203,8 +222,9 @@ async Task<List<string>> FetchImageLinksAsync(
                 var links = itemsElement.EnumerateArray()
                     .Select(i => i.TryGetProperty("link", out var linkProp) ? linkProp.GetString() : null)
                     .Where(s => !string.IsNullOrEmpty(s) && ImageUrlHelper.IsValidImageUrl(s))
+                    .Select(s => s!)
                     .ToList();
-                if (links.Any()) return links!;
+                if (links.Any()) return links;
             }
         }
         catch (HttpRequestException ex)
@@ -229,8 +249,9 @@ async Task<List<string>> FetchImageLinksAsync(
                 var links = serpItems.EnumerateArray()
                     .Select(i => i.TryGetProperty("original", out var linkProp) ? linkProp.GetString() : null)
                     .Where(s => !string.IsNullOrEmpty(s) && ImageUrlHelper.IsValidImageUrl(s))
+                    .Select(s => s!)
                     .ToList();
-                if (links.Any()) return links!;
+                if (links.Any()) return links;
             }
         }
         catch (HttpRequestException ex)
@@ -269,7 +290,7 @@ app.MapPost("/bot", async (
     [FromBody] Update update,
     [FromServices] TelegramBotClient bot,
     [FromServices] IHttpClientFactory clientFactory,
-    [FromServices] ConcurrentDictionary<string, List<string>> imageCache,
+    [FromServices] ConcurrentDictionary<string, ConcurrentBag<string>> imageCache,
     [FromServices] ILogger<Program> logger,
     CancellationToken cancellationToken) =>
 {
@@ -279,7 +300,7 @@ app.MapPost("/bot", async (
 
 app.Run();
 
-// --- 7. Funções Auxiliares (movida para o final para evitar CS8803) ---
+// --- Funções Auxiliares ---
 static class ImageUrlHelper
 {
     public static readonly HashSet<string> ValidImageExtensions = new HashSet<string>(StringComparer.OrdinalIgnoreCase)
@@ -295,6 +316,12 @@ static class ImageUrlHelper
         }
 
         if (!Uri.TryCreate(url, UriKind.Absolute, out var uri))
+        {
+            return false;
+        }
+
+        // Valida se é HTTP ou HTTPS
+        if (uri.Scheme != Uri.UriSchemeHttp && uri.Scheme != Uri.UriSchemeHttps)
         {
             return false;
         }
