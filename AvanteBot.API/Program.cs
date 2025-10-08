@@ -145,7 +145,7 @@ Task HandleUnknownUpdate(ILogger logger, Update update)
 }
 
 
-// A função principal de busca e envio de imagens, agora mais robusta.
+// A função principal de busca e envio de imagens, agora mais robusta. a
 async Task SendNextImageAsync(
     TelegramBotClient bot,
     long chatId,
