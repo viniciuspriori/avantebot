@@ -216,22 +216,9 @@ async Task SendNextImageAsync(
 
     try
     {
-        var http = clientFactory.CreateClient();
-
-        // Check content-type before sending
-        using var response = await http.GetAsync(chosenUrl, cancellationToken);
-        if(!response.IsSuccessStatusCode || !response.Content.Headers.ContentType?.MediaType.StartsWith("image/") == true)
-        {
-            throw new InvalidOperationException($"URL não retorna imagem válida: {chosenUrl}");
-        }
-
-        await using var stream = await response.Content.ReadAsStreamAsync(cancellationToken);
-        var fileName = Path.GetFileName(new Uri(chosenUrl).AbsolutePath);
-        if(string.IsNullOrWhiteSpace(fileName)) fileName = "downloaded_image.jpg";
-
         await bot.SendPhoto(
             chatId: chatId,
-            photo: InputFile.FromStream(stream, fileName),
+            photo: InputFile.FromUri(chosenUrl),
             caption: caption,
             replyMarkup: inlineKeyboard,
             cancellationToken: cancellationToken
@@ -240,7 +227,10 @@ async Task SendNextImageAsync(
     catch(Exception ex)
     {
         logger.LogWarning(ex, "Falha ao enviar imagem direta; URL pode não ser acessível publicamente: {Url}", chosenUrl);
-        await bot.SendMessage(chatId, $"...", cancellationToken: cancellationToken);
+        await bot.SendMessage(chatId, 
+                                $"...", 
+                                replyMarkup: inlineKeyboard,
+                                cancellationToken: cancellationToken);
     }
 }
 
