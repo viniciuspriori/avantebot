@@ -216,23 +216,31 @@ async Task SendNextImageAsync(
 
     try
     {
+        var http = clientFactory.CreateClient();
+
+        // Check content-type before sending
+        using var response = await http.GetAsync(chosenUrl, cancellationToken);
+        if(!response.IsSuccessStatusCode || !response.Content.Headers.ContentType?.MediaType.StartsWith("image/") == true)
+        {
+            throw new InvalidOperationException($"URL não retorna imagem válida: {chosenUrl}");
+        }
+
+        await using var stream = await response.Content.ReadAsStreamAsync(cancellationToken);
+        var fileName = Path.GetFileName(new Uri(chosenUrl).AbsolutePath);
+        if(string.IsNullOrWhiteSpace(fileName)) fileName = "downloaded_image.jpg";
+
         await bot.SendPhoto(
             chatId: chatId,
-            photo: InputFile.FromUri(chosenUrl),
+            photo: InputFile.FromStream(stream, fileName),
             caption: caption,
             replyMarkup: inlineKeyboard,
             cancellationToken: cancellationToken
         );
     }
-    catch (ApiRequestException apiEx)
+    catch(Exception ex)
     {
-        logger.LogError(apiEx, "Telegram API error while sending photo for query '{Query}'. URL: {Url}", query, chosenUrl);
-        await bot.SendMessage(chatId, "...", cancellationToken: cancellationToken);
-    }
-    catch (Exception ex)
-    {
-        logger.LogError(ex, "Unexpected error while sending photo for query '{Query}'. URL: {Url}", query, chosenUrl);
-        await bot.SendMessage(chatId, "Ocorreu um erro inesperado ao tentar enviar a imagem.", cancellationToken: cancellationToken);
+        logger.LogWarning(ex, "Falha ao enviar imagem direta; URL pode não ser acessível publicamente: {Url}", chosenUrl);
+        await bot.SendMessage(chatId, $"...", cancellationToken: cancellationToken);
     }
 }
 
@@ -343,7 +351,7 @@ async Task HandleGoogleSearchAsync(
 
     try
     {
-        var googleUrl = $"https://www.googleapis.com/customsearch/v1?q={Uri.EscapeDataString(query)}&key={apiKey}&cx={cx}&lr=lang_pt&hl=pt";
+        var googleUrl = $"https://www.googleapis.com/customsearch/v1?q={Uri.EscapeDataString(query)} site:pt.wikipedia.org&key={apiKey}&cx={cx}&lr=lang_pt&hl=pt";
         var result = await http.GetFromJsonAsync<JsonElement>(googleUrl, cancellationToken);
 
         if(result.TryGetProperty("items", out var items))
