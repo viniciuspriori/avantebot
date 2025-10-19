@@ -117,8 +117,8 @@ async Task HandleMessageAsync(
             await SendNextImageAsync(bot, message.Chat.Id, query, message.From?.Username, clientFactory, imageCache, logger, cancellationToken);
             break;
 
-        case "/google":
-            await HandleGoogleSearchAsync(bot, message.Chat.Id, query, clientFactory, logger, cancellationToken);
+        case "/wiki":
+            await HandleWikiSearchAsync(bot, message.Chat.Id, query, clientFactory, logger, cancellationToken);
             break;
 
         case "/teste":
@@ -325,7 +325,7 @@ bool IsValidImageUrl(string? url)
     return url.StartsWith("http") && validExtensions.Any(url.EndsWith);
 }
 
-async Task HandleGoogleSearchAsync(
+async Task HandleWikiSearchAsync(
     TelegramBotClient bot,
     long chatId,
     string query,
@@ -335,55 +335,52 @@ async Task HandleGoogleSearchAsync(
 {
     if(string.IsNullOrWhiteSpace(query))
     {
-        await bot.SendMessage(chatId, "Por favor, especifique o que deseja pesquisar. Ex: `/google maçã`", cancellationToken: cancellationToken);
-        return;
-    }
-
-    var apiKey = Environment.GetEnvironmentVariable("GoogleApiKey");
-    var cx = Environment.GetEnvironmentVariable("GoogleCx");
-    var http = clientFactory.CreateClient();
-
-    if(string.IsNullOrEmpty(apiKey) || string.IsNullOrEmpty(cx))
-    {
-        await bot.SendMessage(chatId, "A pesquisa Google não está configurada corretamente.", cancellationToken: cancellationToken);
+        await bot.SendMessage(chatId, "Por favor, digite algo para pesquisar. Exemplo: `/wiki Constituição Federal`", cancellationToken: cancellationToken);
         return;
     }
 
     try
     {
-        var googleUrl = $"https://www.googleapis.com/customsearch/v1?q={Uri.EscapeDataString(query)} site:pt.wikipedia.org&key={apiKey}&cx={cx}&lr=lang_pt&hl=pt";
-        var result = await http.GetFromJsonAsync<JsonElement>(googleUrl, cancellationToken);
+        var http = clientFactory.CreateClient();
+        var url = $"https://pt.wikipedia.org/api/rest_v1/page/summary/{Uri.EscapeDataString(query)}";
 
-        if(result.TryGetProperty("items", out var items))
+        using var response = await http.GetAsync(url, cancellationToken);
+        if(!response.IsSuccessStatusCode)
         {
-            var first = items.EnumerateArray().FirstOrDefault();
-            if(first.ValueKind != JsonValueKind.Undefined &&
-                first.TryGetProperty("title", out var titleProp) &&
-                first.TryGetProperty("snippet", out var snippetProp) &&
-                first.TryGetProperty("link", out var linkProp))
-            {
-                string title = titleProp.GetString() ?? "Resultado";
-                string snippet = snippetProp.GetString() ?? "";
-                string link = linkProp.GetString() ?? "";
-
-                string response = $"📘 *{title}*\n{snippet}\n🔗 [Ver mais]({link})";
-
-                await bot.SendMessage(
-                    chatId,
-                    response,
-                    parseMode: ParseMode.Markdown,
-                    cancellationToken: cancellationToken
-                );
-                return;
-            }
+            await bot.SendMessage(chatId, $"Não encontrei resultados para \"{query}\".", cancellationToken: cancellationToken);
+            return;
         }
 
-        await bot.SendMessage(chatId, $"Não encontrei resultados para '{query}'.", cancellationToken: cancellationToken);
+        var json = await response.Content.ReadAsStringAsync(cancellationToken);
+        using var doc = JsonDocument.Parse(json);
+        var root = doc.RootElement;
+
+        string? title = root.TryGetProperty("title", out var t) ? t.GetString() : query;
+        string? extract = root.TryGetProperty("extract", out var e) ? e.GetString() : null;
+        string? pageUrl = root.TryGetProperty("content_urls", out var c) &&
+                          c.TryGetProperty("desktop", out var d) &&
+                          d.TryGetProperty("page", out var p)
+                          ? p.GetString()
+                          : null;
+
+        if(string.IsNullOrWhiteSpace(extract))
+        {
+            await bot.SendMessage(chatId, $"Não encontrei uma definição clara para \"{query}\".", cancellationToken: cancellationToken);
+            return;
+        }
+
+        // Ensure minimum length of 200 characters
+        if(extract.Length < 200 && !string.IsNullOrWhiteSpace(pageUrl))
+            extract += $"\n\nMais informações: {pageUrl}";
+
+        var message = $"📘 *{title}*\n\n{extract}";
+        await bot.SendMessage(chatId, message, parseMode: ParseMode.Markdown, cancellationToken: cancellationToken);
     }
     catch(Exception ex)
     {
-        logger.LogError(ex, "Erro ao buscar definição para '{Query}'", query);
-        await bot.SendMessage(chatId, "Ocorreu um erro ao consultar o Google.", cancellationToken: cancellationToken);
+        logger.LogError(ex, "Erro ao buscar no Wikipedia para '{Query}'", query);
+        await bot.SendMessage(chatId, "Ocorreu um erro ao tentar buscar a definição. Tente novamente mais tarde.", cancellationToken: cancellationToken);
     }
 }
+
 
