@@ -102,18 +102,37 @@ async Task HandleMessageAsync(
     ILogger logger,
     CancellationToken cancellationToken)
 {
-    var text = message.Text!;
+    var text = message.Text?.Trim();
+    if(string.IsNullOrEmpty(text))
+        return;
 
-    if (text.StartsWith("/image"))
+    // Extract command and query
+    var parts = text.Split(' ', 2, StringSplitOptions.RemoveEmptyEntries);
+    var command = parts[0].ToLowerInvariant();
+    var query = parts.Length > 1 ? parts[1].Trim() : string.Empty;
+
+    switch(command)
     {
-        var query = text.Replace("/image", "").Trim();
-        await SendNextImageAsync(bot, message.Chat.Id, query, message.From?.Username, clientFactory, imageCache, logger, cancellationToken);
+        case "/image":
+            await SendNextImageAsync(bot, message.Chat.Id, query, message.From?.Username, clientFactory, imageCache, logger, cancellationToken);
+            break;
+
+        case "/google":
+            await HandleGoogleSearchAsync(bot, message.Chat.Id, query, clientFactory, logger, cancellationToken);
+            break;
+
+        case "/teste":
+            await bot.SendMessage(
+                message.Chat.Id,
+                $"{message.From?.FirstName} said: {query}\nTry /image <term> or /google <term> to search!",
+                cancellationToken: cancellationToken
+            );
+            break;
+
+        default:
+            break;
     }
-    else if (text.StartsWith("/teste"))
-    {
-        var query = text.Replace("/teste", "").Trim();
-        await bot.SendMessage(message.Chat.Id, $"{message.From?.FirstName} said: {query}\nTry /image <term> to search for an image!", cancellationToken: cancellationToken);
-    }
+
 }
 
 // Manipulador para cliques em botões
@@ -208,7 +227,7 @@ async Task SendNextImageAsync(
     catch (ApiRequestException apiEx)
     {
         logger.LogError(apiEx, "Telegram API error while sending photo for query '{Query}'. URL: {Url}", query, chosenUrl);
-        await bot.SendMessage(chatId, "Desculpe, não consegui enviar essa imagem. Pode ser um link inválido ou temporariamente indisponível.", cancellationToken: cancellationToken);
+        await bot.SendMessage(chatId, "...", cancellationToken: cancellationToken);
     }
     catch (Exception ex)
     {
@@ -297,3 +316,66 @@ bool IsValidImageUrl(string? url)
     string[] validExtensions = [".jpg", ".jpeg", ".png", ".gif", ".webp"];
     return url.StartsWith("http") && validExtensions.Any(url.EndsWith);
 }
+
+async Task HandleGoogleSearchAsync(
+    TelegramBotClient bot,
+    long chatId,
+    string query,
+    IHttpClientFactory clientFactory,
+    ILogger logger,
+    CancellationToken cancellationToken)
+{
+    if(string.IsNullOrWhiteSpace(query))
+    {
+        await bot.SendMessage(chatId, "Por favor, especifique o que deseja pesquisar. Ex: `/google maçã`", cancellationToken: cancellationToken);
+        return;
+    }
+
+    var apiKey = Environment.GetEnvironmentVariable("GoogleApiKey");
+    var cx = Environment.GetEnvironmentVariable("GoogleCx");
+    var http = clientFactory.CreateClient();
+
+    if(string.IsNullOrEmpty(apiKey) || string.IsNullOrEmpty(cx))
+    {
+        await bot.SendMessage(chatId, "A pesquisa Google não está configurada corretamente.", cancellationToken: cancellationToken);
+        return;
+    }
+
+    try
+    {
+        var googleUrl = $"https://www.googleapis.com/customsearch/v1?q={Uri.EscapeDataString(query)}&key={apiKey}&cx={cx}";
+        var result = await http.GetFromJsonAsync<JsonElement>(googleUrl, cancellationToken);
+
+        if(result.TryGetProperty("items", out var items))
+        {
+            var first = items.EnumerateArray().FirstOrDefault();
+            if(first.ValueKind != JsonValueKind.Undefined &&
+                first.TryGetProperty("title", out var titleProp) &&
+                first.TryGetProperty("snippet", out var snippetProp) &&
+                first.TryGetProperty("link", out var linkProp))
+            {
+                string title = titleProp.GetString() ?? "Resultado";
+                string snippet = snippetProp.GetString() ?? "";
+                string link = linkProp.GetString() ?? "";
+
+                string response = $"📘 *{title}*\n{snippet}\n🔗 [Ver mais]({link})";
+
+                await bot.SendMessage(
+                    chatId,
+                    response,
+                    parseMode: ParseMode.Markdown,
+                    cancellationToken: cancellationToken
+                );
+                return;
+            }
+        }
+
+        await bot.SendMessage(chatId, $"Não encontrei resultados para '{query}'.", cancellationToken: cancellationToken);
+    }
+    catch(Exception ex)
+    {
+        logger.LogError(ex, "Erro ao buscar definição para '{Query}'", query);
+        await bot.SendMessage(chatId, "Ocorreu um erro ao consultar o Google.", cancellationToken: cancellationToken);
+    }
+}
+
