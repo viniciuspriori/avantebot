@@ -229,7 +229,6 @@ async Task SendNextImageAsync(
         logger.LogWarning(ex, "Falha ao enviar imagem direta; URL pode não ser acessível publicamente: {Url}", chosenUrl);
         await bot.SendMessage(chatId, 
                                 $"...", 
-                                replyMarkup: inlineKeyboard,
                                 cancellationToken: cancellationToken);
     }
 }
