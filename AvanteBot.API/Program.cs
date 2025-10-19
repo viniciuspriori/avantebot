@@ -343,7 +343,7 @@ async Task HandleGoogleSearchAsync(
 
     try
     {
-        var googleUrl = $"https://www.googleapis.com/customsearch/v1?q={Uri.EscapeDataString(query)}&key={apiKey}&cx={cx}";
+        var googleUrl = $"https://www.googleapis.com/customsearch/v1?q={Uri.EscapeDataString(query)}&key={apiKey}&cx={cx}&lr=lang_pt&hl=pt";
         var result = await http.GetFromJsonAsync<JsonElement>(googleUrl, cancellationToken);
 
         if(result.TryGetProperty("items", out var items))
